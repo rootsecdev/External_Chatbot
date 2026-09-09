@@ -1,0 +1,7 @@
+# The lab itself has NO third-party dependencies. It runs on the Python 3.10+
+# standard library alone:
+#   python3 lab.py
+#
+# Optional — only for real-model mode (--provider anthropic):
+#   pip install anthropic
+anthropic>=0.40

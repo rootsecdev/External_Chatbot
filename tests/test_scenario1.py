@@ -10,8 +10,11 @@ useless as one that cannot be hardened.
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 import threading
+import types
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +27,19 @@ from chatbot import guards, state  # noqa: E402
 from chatbot.agent import Agent  # noqa: E402
 from chatbot.injection import extract_directives, strip_hidden  # noqa: E402
 from internal_services.server import Handler  # noqa: E402
+# Importing the engine module does NOT import openai (it is loaded lazily inside
+# the engine's __init__), so the translation helpers are always testable. The
+# tests that build a client are skipped when the openai package is absent, which
+# keeps the suite runnable with no third-party dependency.
+from chatbot.engines.azure_openai_engine import (  # noqa: E402
+    _is_content_filter, _to_openai_messages, _to_openai_tools,
+    AzureOpenAIEngine)
+
+try:
+    import openai  # noqa: F401
+    _HAS_OPENAI = True
+except ImportError:
+    _HAS_OPENAI = False
 
 _srv: ThreadingHTTPServer | None = None
 METADATA_URL = f"{INTERNAL_BASE}/latest/meta-data/iam/security-credentials/nora-web-role"
@@ -231,6 +247,187 @@ class InjectionParserTests(unittest.TestCase):
     def test_prose_is_not_a_directive(self):
         self.assertEqual([], extract_directives(
             "He says the sky is blue and the retention tiers made sense to us"))
+
+
+def _fake_tool_call(name: str, args: dict, id: str = "call_1"):
+    fn = types.SimpleNamespace(name=name, arguments=json.dumps(args))
+    return types.SimpleNamespace(id=id, function=fn)
+
+
+def _fake_response(content=None, tool_calls=None, finish_reason="stop"):
+    msg = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = types.SimpleNamespace(message=msg, finish_reason=finish_reason)
+    return types.SimpleNamespace(choices=[choice])
+
+
+class AzureTranslationTests(unittest.TestCase):
+    """Pure translation and detection helpers — no openai package needed."""
+
+    def test_tool_specs_become_openai_functions(self):
+        specs = [{"name": "kb_search", "description": "d",
+                  "input_schema": {"type": "object", "properties": {"q": {}}}}]
+        out = _to_openai_tools(specs)
+        self.assertEqual("function", out[0]["type"])
+        self.assertEqual("kb_search", out[0]["function"]["name"])
+        self.assertEqual(specs[0]["input_schema"], out[0]["function"]["parameters"])
+
+    def test_conversation_roundtrips_to_openai_shape(self):
+        messages = [
+            {"role": "user", "content": "read the orbit-quickstart page"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "call_abc",
+                 "name": "read_site_page", "input": {"slug": "orbit-quickstart"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_abc",
+                 "content": "page text"},
+            ]},
+        ]
+        out = _to_openai_messages("SYS", messages)
+        self.assertEqual({"role": "system", "content": "SYS"}, out[0])
+        self.assertEqual({"role": "user",
+                          "content": "read the orbit-quickstart page"}, out[1])
+        # tool_use -> tool_calls, id preserved, input JSON-encoded
+        self.assertEqual("assistant", out[2]["role"])
+        self.assertEqual("call_abc", out[2]["tool_calls"][0]["id"])
+        self.assertEqual({"slug": "orbit-quickstart"},
+                         json.loads(out[2]["tool_calls"][0]["function"]["arguments"]))
+        # tool_result -> a `tool` message keyed by the same id
+        self.assertEqual("tool", out[3]["role"])
+        self.assertEqual("call_abc", out[3]["tool_call_id"])
+        self.assertEqual("page text", out[3]["content"])
+
+    def test_assistant_toolcall_without_text_has_null_content(self):
+        messages = [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "c1", "name": "kb_search", "input": {}}]}]
+        out = _to_openai_messages("SYS", messages)
+        self.assertIsNone(out[1]["content"])
+        self.assertEqual("c1", out[1]["tool_calls"][0]["id"])
+
+    def test_content_filter_detection(self):
+        self.assertTrue(_is_content_filter(types.SimpleNamespace(code="content_filter")))
+        self.assertTrue(_is_content_filter(Exception("blocked by content_filter")))
+        self.assertFalse(_is_content_filter(types.SimpleNamespace(code="rate_limit")))
+
+
+@unittest.skipUnless(_HAS_OPENAI, "openai package not installed")
+class AzureEngineTests(unittest.TestCase):
+    """Engine construction and the mocked request path. Skipped without openai."""
+
+    _ENV_KEYS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
+                 "AZURE_OPENAI_AD_TOKEN", "AZURE_OPENAI_DEPLOYMENT",
+                 "AZURE_OPENAI_API_VERSION")
+
+    def _set_env(self, **overrides):
+        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+
+        def restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
+        for k in self._ENV_KEYS:
+            os.environ.pop(k, None)
+        os.environ.update({k: v for k, v in overrides.items() if v is not None})
+
+    def _engine(self, fake_create, effort="low"):
+        self._set_env(AZURE_OPENAI_ENDPOINT="https://demo.openai.azure.com",
+                      AZURE_OPENAI_API_KEY="fake-key",
+                      AZURE_OPENAI_DEPLOYMENT="gpt-demo")
+        eng = AzureOpenAIEngine(LabConfig(mode=MODE_VULNERABLE, effort=effort))
+        eng.client.chat.completions.create = fake_create
+        return eng
+
+    def test_construction_requires_endpoint(self):
+        self._set_env(AZURE_OPENAI_API_KEY="fake-key")
+        with self.assertRaises(SystemExit) as ctx:
+            AzureOpenAIEngine(LabConfig())
+        self.assertIn("AZURE_OPENAI_ENDPOINT", str(ctx.exception))
+
+    def test_construction_requires_credentials(self):
+        self._set_env(AZURE_OPENAI_ENDPOINT="https://demo.openai.azure.com")
+        with self.assertRaises(SystemExit) as ctx:
+            AzureOpenAIEngine(LabConfig())
+        self.assertIn("AZURE_OPENAI_API_KEY", str(ctx.exception))
+
+    def test_deployment_falls_back_to_model_id(self):
+        self._set_env(AZURE_OPENAI_ENDPOINT="https://demo.openai.azure.com",
+                      AZURE_OPENAI_API_KEY="fake-key")
+        eng = AzureOpenAIEngine(LabConfig(model="my-deployment"))
+        self.assertEqual("my-deployment", eng.deployment)
+
+    def test_complete_translates_a_tool_call(self):
+        captured = {}
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return _fake_response(content="here",
+                                  tool_calls=[_fake_tool_call("kb_search",
+                                                              {"query": "pricing"})],
+                                  finish_reason="tool_calls")
+        eng = self._engine(fake_create)
+        specs = [{"name": "kb_search", "description": "d",
+                  "input_schema": {"type": "object", "properties": {}}}]
+        reply = eng.complete("SYS", [{"role": "user", "content": "pricing?"}],
+                             specs, hardened=False)
+        # request was addressed to the deployment and carried a system message
+        self.assertEqual("gpt-demo", captured["model"])
+        self.assertEqual("system", captured["messages"][0]["role"])
+        self.assertIn("max_completion_tokens", captured)
+        # response translated back into an EngineReply + ToolCall
+        self.assertEqual("here", reply.text)
+        self.assertEqual(1, len(reply.tool_calls))
+        self.assertEqual("kb_search", reply.tool_calls[0].name)
+        self.assertEqual({"query": "pricing"}, reply.tool_calls[0].input)
+        self.assertEqual("call_1", reply.tool_calls[0].id)
+
+    def test_complete_handles_malformed_tool_arguments(self):
+        def fake_create(**kwargs):
+            bad = types.SimpleNamespace(
+                id="c1", function=types.SimpleNamespace(name="kb_search",
+                                                        arguments="{not json"))
+            return _fake_response(tool_calls=[bad], finish_reason="tool_calls")
+        reply = self._engine(fake_create).complete(
+            "SYS", [{"role": "user", "content": "x"}], [], hardened=False)
+        self.assertEqual({}, reply.tool_calls[0].input)
+
+    def test_complete_reports_content_filter(self):
+        def fake_create(**kwargs):
+            return _fake_response(content=None, finish_reason="content_filter")
+        reply = self._engine(fake_create).complete(
+            "SYS", [{"role": "user", "content": "x"}], [], hardened=False)
+        self.assertIn("content filter", reply.text.lower())
+        self.assertIn("content_filter", reply.note)
+
+    def test_complete_recovers_when_reasoning_effort_is_rejected(self):
+        # Use a stand-in openai namespace so the test does not depend on how a
+        # given SDK version constructs its exception objects — only on the
+        # engine catching self._openai.BadRequestError and recovering.
+        class _FakeBadRequest(Exception):
+            code = None
+        fake_openai = types.SimpleNamespace(
+            BadRequestError=_FakeBadRequest,
+            NotFoundError=type("NotFoundError", (Exception,), {}),
+            RateLimitError=type("RateLimitError", (Exception,), {}),
+            APIStatusError=type("APIStatusError", (Exception,), {}),
+            APIConnectionError=type("APIConnectionError", (Exception,), {}))
+        calls = {"n": 0}
+
+        def fake_create(**kwargs):
+            calls["n"] += 1
+            if "reasoning_effort" in kwargs:
+                raise _FakeBadRequest("Unsupported parameter: 'reasoning_effort'")
+            return _fake_response(content="ok", finish_reason="stop")
+        eng = self._engine(fake_create, effort="high")
+        eng._openai = fake_openai
+        reply = eng.complete("SYS", [{"role": "user", "content": "x"}], [],
+                             hardened=False)
+        self.assertEqual("ok", reply.text)
+        self.assertFalse(eng._use_effort, "effort must be disabled after rejection")
+        self.assertEqual(2, calls["n"], "should retry exactly once, without effort")
 
 
 if __name__ == "__main__":

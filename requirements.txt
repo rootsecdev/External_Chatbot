@@ -2,6 +2,8 @@
 # standard library alone:
 #   python3 lab.py
 #
-# Optional — only for real-model mode (--provider anthropic):
-#   pip install anthropic
+# Optional — only for real-model mode. Install just the one you use:
+#   pip install anthropic     # --provider anthropic (the Claude API)
+#   pip install openai        # --provider azure     (Azure OpenAI)
 anthropic>=0.40
+openai>=1.40

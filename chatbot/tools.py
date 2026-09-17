@@ -139,12 +139,23 @@ def _read_site_page(args: dict, cfg: LabConfig, session: str) -> ToolResult:
         return ToolResult(f"No page with slug {slug!r}.", source=f"page:{slug}")
 
     raw = path.read_text()
-    body = raw.split("---", 2)[2].strip() if raw.startswith("---") else raw
+    meta: dict[str, str] = {}
+    body = raw
+    if raw.startswith("---"):
+        _, front, body = raw.split("---", 2)
+        for line in front.strip().splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                meta[k.strip()] = v.strip()
+    body = body.strip()
+    allow_comments = meta.get("comments", "true").lower() != "false"
 
     # A page is not just what the CMS author wrote. Anything rendered into it —
     # comments here, but equally a review widget, a product Q&A, a stored XSS —
-    # becomes part of what the bot reads.
-    comments = state.comments_for(slug)
+    # becomes part of what the bot reads. Pages that carry no comment surface
+    # (comments: false) render none, so the flag is a real control, not just a
+    # UI toggle.
+    comments = state.comments_for(slug) if allow_comments else []
     if comments:
         rendered = "\n".join(f"- {c.author}: {c.body}" for c in comments)
         body += f"\n\nVisitor comments ({len(comments)}):\n{rendered}"

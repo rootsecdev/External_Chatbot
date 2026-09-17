@@ -15,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import threading
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -79,11 +80,31 @@ class Decision:
 # Vector #4 — SSRF / outbound request abuse
 # ---------------------------------------------------------------------------
 
-def _resolve(host: str) -> list[str]:
-    try:
-        return sorted({ai[4][0] for ai in socket.getaddrinfo(host, None)})
-    except socket.gaierror:
-        return []
+def _resolve(host: str, timeout: float = 2.0) -> list[str]:
+    """Resolve a host to its addresses, bounded by a timeout.
+
+    socket.getaddrinfo honours no timeout of its own and blocks the calling
+    thread for the full resolver timeout — 10-15s for a slow or non-resolving
+    name. A guard that runs on every fetch must not hand an attacker that stall,
+    so resolution runs in a worker thread we only wait on briefly. A name we
+    could not resolve in time contributes no addresses, which is safe: an
+    off-allowlist host is already blocked by the allowlist check, and a
+    timed-out resolution simply skips the private-range check for that name.
+    """
+    box: dict[str, list[str]] = {}
+
+    def _work() -> None:
+        try:
+            box["addrs"] = sorted({ai[4][0] for ai in socket.getaddrinfo(host, None)})
+        except socket.gaierror:
+            box["addrs"] = []
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout)
+    # On timeout the worker keeps its own (abandoned) dict entry; the caller
+    # gets a fresh empty list, never a value the background thread can mutate.
+    return box.get("addrs", [])
 
 
 def egress_check(url: str, cfg: LabConfig, session: str) -> Decision:
@@ -102,7 +123,12 @@ def egress_check(url: str, cfg: LabConfig, session: str) -> Decision:
     if not host:
         findings.append("no host in URL")
 
-    allowed_host = host == PUBLIC_DOMAIN or host.endswith("." + PUBLIC_DOMAIN)
+    # Membership in the configured allowlist, not a suffix match on the
+    # corporate domain. A suffix match trusts every subdomain, which hands the
+    # attacker exactly the internal hosts named in the prompt
+    # (crm.internal, smtp-relay.internal, nora-egress-proxy.internal, ...) —
+    # each of them ends in the corporate domain but is not a public endpoint.
+    allowed_host = host in cfg.egress_allowlist
     if host and not allowed_host:
         findings.append(f"host {host} not on egress allowlist {list(cfg.egress_allowlist)}")
 

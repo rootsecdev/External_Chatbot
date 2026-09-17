@@ -38,4 +38,8 @@ def build(provider: str, cfg):
     if provider == "anthropic":
         from chatbot.engines.anthropic_engine import AnthropicEngine
         return AnthropicEngine(cfg)
-    raise ValueError(f"unknown provider {provider!r} (use 'simulated' or 'anthropic')")
+    if provider == "azure":
+        from chatbot.engines.azure_openai_engine import AzureOpenAIEngine
+        return AzureOpenAIEngine(cfg)
+    raise ValueError(
+        f"unknown provider {provider!r} (use 'simulated', 'anthropic' or 'azure')")

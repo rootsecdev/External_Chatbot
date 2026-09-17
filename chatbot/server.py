@@ -131,6 +131,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"mode": CONFIG.mode})
 
         if path == "/api/comment":
+            # Deliberately permissive: the API accepts a comment on any real
+            # page, including one whose UI form is disabled (comments: false).
+            # That is the attacker's convenience — planting content without the
+            # form. The control lives at ingestion: read_site_page renders
+            # comments only from pages that carry a comment surface, so content
+            # planted on a no-comment page is stored but never reaches the bot.
             slug = str(data.get("slug", "")).strip()
             if not _load_page(slug):
                 return self._json({"error": f"no such page {slug!r}"}, 404)

@@ -26,8 +26,9 @@ Seven abuse vectors, each exploitable on demand and each fixable on demand:
 * Nothing else. No pip install, no virtualenv, no Docker, no API key, no
   network access. The lab runs on the standard library alone.
 
-`anthropic` is needed *only* if you want to drive a real model instead of the
-built-in simulated engine — see [§7](#7-real-model-mode).
+A real-model provider is needed *only* if you want to drive a live model
+instead of the built-in simulated engine: `anthropic` for the Claude API, or
+`openai` for Azure OpenAI — see [section 7](#7-real-model-mode).
 
 ---
 
@@ -136,8 +137,8 @@ The recommended flow:
 2. Click the badge to switch to **hardened**. Re-run the two vectors that
    landed hardest — they now fail, and the trace names the control that stopped
    each one.
-3. Finish with the automated before/after table (§6) and the mitigation table
-   (§8).
+3. Finish with the automated before/after table (section 6) and the mitigation table
+   (section 8).
 
 ---
 
@@ -196,7 +197,7 @@ python3 attacks/exploit_runner.py --mode hardened --vector 4
 
 ## 7. Real model mode
 
-The lab has two interchangeable engines behind one interface.
+The lab has three interchangeable engines behind one interface.
 
 **Simulated** (default) is a deterministic rule engine, not a model. It
 reproduces the failure modes reliably, offline, at zero cost. **Use this on
@@ -214,6 +215,28 @@ python3 lab.py --provider anthropic
 
 Defaults to `claude-opus-5` at `effort=low` for chat latency, with server-side
 refusal fallbacks enabled. Override with `--model` and `--effort`.
+
+**Azure OpenAI** drives a model from your own Azure deployment through the same
+prompts, tools and guards. The harness speaks the Anthropic message shape; the
+engine translates it to and from the Chat Completions format, so nothing else
+changes:
+
+```bash
+pip install openai
+export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+export AZURE_OPENAI_API_KEY=<key>              # or AZURE_OPENAI_AD_TOKEN=<entra-token>
+export AZURE_OPENAI_DEPLOYMENT=<deployment>    # or pass --model <deployment>
+python3 lab.py --provider azure
+```
+
+On Azure the model is addressed by *deployment name*, not model id, so set
+`AZURE_OPENAI_DEPLOYMENT` (or pass it as `--model`). `AZURE_OPENAI_API_VERSION`
+defaults to a recent GA version; override it if your resource needs another.
+`--effort` maps to `reasoning_effort` on reasoning-capable deployments and is
+dropped automatically on ones that reject it. When Azure's content filter
+declines a request, the engine reports it plainly instead of crashing — the
+Azure analogue of a Claude refusal, and worth putting on screen for the same
+reason.
 
 Expect a capable model to resist some of these attacks unprompted — it will
 often refuse the blunt prompt-extraction ask and hedge on refunds. **That is a
@@ -287,8 +310,8 @@ and is much harder to argue with when the audience can see the two machines.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--mode` | `vulnerable` | Start `vulnerable` or `hardened`. Switchable at runtime. |
-| `--provider` | `simulated` | `simulated` (offline, deterministic) or `anthropic` (real model). |
-| `--model` | `claude-opus-5` | Model id, for `--provider anthropic`. |
+| `--provider` | `simulated` | `simulated` (offline, deterministic), `anthropic` (Claude API), or `azure` (Azure OpenAI). |
+| `--model` | `claude-opus-5` | Model id for `--provider anthropic`; deployment name for `--provider azure` (or set `AZURE_OPENAI_DEPLOYMENT`). |
 | `--effort` | `low` | `low`, `medium`, `high`, `xhigh`, `max`. |
 | `--host` | `127.0.0.1` | Bind address for the public app. `0.0.0.0` for remote access. |
 | `--port` | `8000` | Port for the public app. |
@@ -307,7 +330,7 @@ python3 internal_services/server.py
 ### Tests
 
 ```bash
-python3 -m unittest discover -s tests          # 20 tests, ~35s
+python3 -m unittest discover -s tests          # 20 tests, ~7s
 python3 -m unittest discover -s tests -v       # per-test detail
 ```
 
@@ -366,12 +389,21 @@ using the UI, click `reset lab` or `curl -X POST localhost:8000/api/reset`.
 `--no-internal`.
 
 **A real model refuses everything** in `--provider anthropic` mode — expected
-on some vectors; see [§7](#7-real-model-mode). Use `--provider simulated` for a
+on some vectors; see [section 7](#7-real-model-mode). Use `--provider simulated` for a
 guaranteed-reproducible demo, and treat the refusals as a finding in their own
 right.
 
 **`The anthropic package is required`** — `pip install anthropic`, or drop
 `--provider anthropic`.
+
+**`The openai package is required`** — `pip install openai`, or drop
+`--provider azure`.
+
+**`AZURE_OPENAI_ENDPOINT is required`** — export `AZURE_OPENAI_ENDPOINT` and
+either `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_AD_TOKEN` before starting with
+`--provider azure`. A `deployment ... not found` error means
+`AZURE_OPENAI_DEPLOYMENT` (or `--model`) does not match a deployment on that
+resource.
 
 **Nothing appears in the Trace panel** — it polls every 4 seconds; send a chat
 message first. If it stays empty, check the browser console.
@@ -394,7 +426,8 @@ chatbot/
   server.py                     stdlib HTTP: site, chat widget, demo API
   web.py                        HTML/CSS/JS for the site and demo console
   engines/simulated.py          deterministic under-defended chatbot
-  engines/anthropic_engine.py   real model, same guards
+  engines/anthropic_engine.py   real model via the Claude API, same guards
+  engines/azure_openai_engine.py real model via Azure OpenAI, same guards
 corpus/public/                  4 docs the bot should see
 corpus/internal/                5 docs it should not — the accidental indexing
 site_content/                   the marketing site pages

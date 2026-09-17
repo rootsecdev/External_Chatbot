@@ -27,11 +27,13 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=[MODE_VULNERABLE, MODE_HARDENED],
                     default=CONFIG.mode, help="start vulnerable or hardened")
-    ap.add_argument("--provider", choices=["simulated", "anthropic"],
+    ap.add_argument("--provider", choices=["simulated", "anthropic", "azure"],
                     default=CONFIG.provider,
-                    help="deterministic rule engine, or the real Claude API")
+                    help="deterministic rule engine, the real Claude API, or "
+                         "Azure OpenAI")
     ap.add_argument("--model", default=CONFIG.model,
-                    help="model id for --provider anthropic")
+                    help="model id for --provider anthropic, or the deployment "
+                         "name for --provider azure (or set AZURE_OPENAI_DEPLOYMENT)")
     ap.add_argument("--effort", default=CONFIG.effort,
                     choices=["low", "medium", "high", "xhigh", "max"])
     ap.add_argument("--host", default=PUBLIC_HOST)

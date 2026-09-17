@@ -40,6 +40,10 @@ class LabConfig:
     provider: str = os.environ.get("LAB_PROVIDER", "simulated")
     model: str = os.environ.get("LAB_MODEL", "claude-opus-5")
     effort: str = os.environ.get("LAB_EFFORT", "low")
+    # Sampling temperature for the real-model providers. 0 is the default so a
+    # live demo is as repeatable as the API allows; a deployment that rejects a
+    # fixed temperature (some reasoning models) has it dropped automatically.
+    temperature: float = float(os.environ.get("LAB_TEMPERATURE", "0"))
     max_tool_steps: int = 6
 
     # Hardened-mode egress allowlist for the fetch_url tool.

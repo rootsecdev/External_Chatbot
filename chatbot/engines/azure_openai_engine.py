@@ -149,6 +149,7 @@ class AzureOpenAIEngine:
         )
         self._effort = _EFFORT.get(cfg.effort, "medium")
         self._use_effort = True
+        self._use_temperature = True
         self._token_param = "max_completion_tokens"
 
     def complete(self, system: str, messages: list[dict], tools: list[dict],
@@ -209,13 +210,16 @@ class AzureOpenAIEngine:
 
     def _create(self, base_kwargs: dict):
         """Send the request, recovering from a deployment that rejects an
-        optional parameter. reasoning_effort is dropped first; the newer
+        optional parameter. A fixed temperature is dropped first (reasoning
+        models allow only the default), then reasoning_effort, then the newer
         max_completion_tokens is swapped for max_tokens if unsupported. Each
         fallback flips a flag permanently, so the retry converges."""
         kwargs = dict(base_kwargs)
         kwargs[self._token_param] = MAX_TOKENS
         if self._use_effort:
             kwargs["reasoning_effort"] = self._effort
+        if self._use_temperature and self.cfg.temperature is not None:
+            kwargs["temperature"] = self.cfg.temperature
         try:
             return self.client.chat.completions.create(**kwargs)
         except self._openai.BadRequestError as exc:
@@ -223,7 +227,10 @@ class AzureOpenAIEngine:
                 raise
             blob = str(exc).lower()
             retry = False
-            if self._use_effort and "reasoning_effort" in blob:
+            if self._use_temperature and "temperature" in blob:
+                self._use_temperature = False
+                retry = True
+            elif self._use_effort and "reasoning_effort" in blob:
                 self._use_effort = False
                 retry = True
             elif (self._token_param == "max_completion_tokens"

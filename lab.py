@@ -36,6 +36,9 @@ def main() -> None:
                          "name for --provider azure (or set AZURE_OPENAI_DEPLOYMENT)")
     ap.add_argument("--effort", default=CONFIG.effort,
                     choices=["low", "medium", "high", "xhigh", "max"])
+    ap.add_argument("--temperature", type=float, default=CONFIG.temperature,
+                    help="sampling temperature for real-model providers "
+                         "(default 0 for repeatable demos)")
     ap.add_argument("--host", default=PUBLIC_HOST)
     ap.add_argument("--port", type=int, default=PUBLIC_PORT)
     ap.add_argument("--no-internal", action="store_true",
@@ -46,6 +49,7 @@ def main() -> None:
     CONFIG.provider = args.provider
     CONFIG.model = args.model
     CONFIG.effort = args.effort
+    CONFIG.temperature = args.temperature
 
     if not args.no_internal:
         from internal_services.server import main as internal_main

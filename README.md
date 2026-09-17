@@ -252,6 +252,25 @@ finding, not a failure of the lab**, and it is worth putting on screen:
 That contrast separates *"the model behaved badly"* from *"we built it wrong"* —
 and the second one is the finding that goes in the report.
 
+### Know which vectors land before you demo
+
+A real model is non-deterministic, and on Azure it sits behind a content filter,
+so a vector that lands in rehearsal can refuse on stage. Run the pre-flight
+against your running lab to measure each vector's landing rate on your actual
+deployment:
+
+```bash
+python3 lab.py --provider azure              # in one terminal
+python3 attacks/preflight.py --runs 5        # in another
+```
+
+It attempts every vector `--runs` times in vulnerable mode and prints a landing
+rate plus demo guidance — which vectors are **reliable** to lead with, which are
+**flaky** and want rehearsing, and which the model or filter **resists** (narrate
+those as the finding). It hits the model repeatedly, so it costs tokens; narrow
+it with `--runs` and `--vector N`. Keep `--temperature 0` (the default) for the
+most repeatable behaviour the API allows.
+
 ---
 
 ## 8. The two modes, and what actually fixes each vector
@@ -313,13 +332,14 @@ and is much harder to argue with when the audience can see the two machines.
 | `--provider` | `simulated` | `simulated` (offline, deterministic), `anthropic` (Claude API), or `azure` (Azure OpenAI). |
 | `--model` | `claude-opus-5` | Model id for `--provider anthropic`; deployment name for `--provider azure` (or set `AZURE_OPENAI_DEPLOYMENT`). |
 | `--effort` | `low` | `low`, `medium`, `high`, `xhigh`, `max`. |
+| `--temperature` | `0` | Sampling temperature for `anthropic` / `azure`. `0` for repeatable demos; dropped automatically if the model rejects a fixed value. |
 | `--host` | `127.0.0.1` | Bind address for the public app. `0.0.0.0` for remote access. |
 | `--port` | `8000` | Port for the public app. |
 | `--no-internal` | off | Do not start the internal network simulator. Use if you want to run it separately, or if port 9001 is taken. |
 
 Every default can also be set by environment variable: `LAB_MODE`,
-`LAB_PROVIDER`, `LAB_MODEL`, `LAB_EFFORT`, `LAB_PUBLIC_HOST`, `LAB_PUBLIC_PORT`,
-`LAB_INTERNAL_HOST`, `LAB_INTERNAL_PORT`.
+`LAB_PROVIDER`, `LAB_MODEL`, `LAB_EFFORT`, `LAB_TEMPERATURE`, `LAB_PUBLIC_HOST`,
+`LAB_PUBLIC_PORT`, `LAB_INTERNAL_HOST`, `LAB_INTERNAL_PORT`.
 
 To run the internal simulator on its own:
 
@@ -433,6 +453,7 @@ corpus/internal/                5 docs it should not — the accidental indexing
 site_content/                   the marketing site pages
 internal_services/server.py     metadata service, actuator, admin panel, CRM API
 attacks/exploit_runner.py       automated vectors + before/after table
+attacks/preflight.py            landing-rate check against a real model
 attacks/PLAYBOOK.md             copy-paste prompts for driving it live
 tests/test_scenario1.py         20 tests: each vector must work AND be fixable
 ```

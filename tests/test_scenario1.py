@@ -394,6 +394,42 @@ class AzureEngineTests(unittest.TestCase):
             "SYS", [{"role": "user", "content": "x"}], [], hardened=False)
         self.assertEqual({}, reply.tool_calls[0].input)
 
+    def test_complete_sends_configured_temperature(self):
+        captured = {}
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return _fake_response(content="ok", finish_reason="stop")
+        self._engine(fake_create)  # LabConfig default temperature is 0
+        self._engine(fake_create).complete(
+            "SYS", [{"role": "user", "content": "x"}], [], hardened=False)
+        self.assertEqual(0, captured["temperature"])
+
+    def test_complete_drops_temperature_when_rejected(self):
+        class _FakeBadRequest(Exception):
+            code = None
+        fake_openai = types.SimpleNamespace(
+            BadRequestError=_FakeBadRequest,
+            NotFoundError=type("NotFoundError", (Exception,), {}),
+            RateLimitError=type("RateLimitError", (Exception,), {}),
+            APIStatusError=type("APIStatusError", (Exception,), {}),
+            APIConnectionError=type("APIConnectionError", (Exception,), {}))
+        calls = {"n": 0}
+
+        def fake_create(**kwargs):
+            calls["n"] += 1
+            if "temperature" in kwargs:
+                raise _FakeBadRequest(
+                    "temperature is not supported with this model")
+            return _fake_response(content="ok", finish_reason="stop")
+        eng = self._engine(fake_create)
+        eng._openai = fake_openai
+        reply = eng.complete("SYS", [{"role": "user", "content": "x"}], [],
+                             hardened=False)
+        self.assertEqual("ok", reply.text)
+        self.assertFalse(eng._use_temperature)
+        self.assertEqual(2, calls["n"], "should retry once, without temperature")
+
     def test_complete_reports_content_filter(self):
         def fake_create(**kwargs):
             return _fake_response(content=None, finish_reason="content_filter")

@@ -46,6 +46,7 @@ class AnthropicEngine:
         self.client = anthropic.Anthropic()
         self.cfg = cfg
         self._use_fallbacks = True
+        self._use_temperature = True
 
     def complete(self, system: str, messages: list[dict], tools: list[dict],
                  hardened: bool) -> EngineReply:
@@ -96,12 +97,29 @@ class AnthropicEngine:
 
     def _create(self, kwargs: dict):
         """Prefer the refusal-fallback beta; fall back to the stable endpoint if
-        this SDK or account does not accept it."""
-        if self._use_fallbacks:
-            try:
-                return self.client.beta.messages.create(
-                    betas=[FALLBACK_BETA], fallbacks="default", **kwargs)
-            except (TypeError, self._anthropic.BadRequestError):
-                # Older SDK, or the beta is not enabled for this account.
-                self._use_fallbacks = False
-        return self.client.messages.create(**kwargs)
+        this SDK or account does not accept it. A fixed temperature is applied
+        when set and dropped if the model rejects it (reasoning modes allow only
+        the default), which keeps a repeatable demo working across models."""
+        attempt = dict(kwargs)
+        if self._use_temperature and self.cfg.temperature is not None:
+            attempt["temperature"] = self.cfg.temperature
+        try:
+            if self._use_fallbacks:
+                try:
+                    return self.client.beta.messages.create(
+                        betas=[FALLBACK_BETA], fallbacks="default", **attempt)
+                except TypeError:
+                    # Older SDK: it does not accept the beta kwargs.
+                    self._use_fallbacks = False
+                except self._anthropic.BadRequestError as exc:
+                    if self._use_temperature and "temperature" in str(exc).lower():
+                        self._use_temperature = False
+                        return self._create(kwargs)
+                    # Beta not enabled for this account; use the stable endpoint.
+                    self._use_fallbacks = False
+            return self.client.messages.create(**attempt)
+        except self._anthropic.BadRequestError as exc:
+            if self._use_temperature and "temperature" in str(exc).lower():
+                self._use_temperature = False
+                return self._create(kwargs)
+            raise
